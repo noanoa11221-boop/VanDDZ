@@ -3,22 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>VanDDZ - Mobile Game</title>
+    <title>VanDDZ - Live Google Sheets</title>
     <style>
         body { margin:0; padding:0; background:#121212; color:#fff; font-family:sans-serif; overflow:hidden; user-select:none; }
         #game-board { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; padding:10px; height:55vh; box-sizing:border-box; }
-        .zone { background:#222; border:2px dashed #444; border-radius:8px; display:flex; justify-content:center; align-items:center; position:relative; font-size:12px; }
-        .zone.active { border-color:#00ff00; background:#1a331a; }
+        .zone { background:#222; border:2px dashed #444; border-radius:8px; display:flex; justify-content:center; align-items:center; position:relative; font-size:12px; font-weight:bold; color:#666; }
+        .zone.active { border-color:#00ff00; background:#1a331a; color:#00ff00; }
         #player-hand { display:flex; overflow-x:auto; padding:10px; background:#0a0a0a; height:30vh; box-sizing:border-box; gap:8px; border-top:2px solid #333; }
-        .card { width:75px; height:108px; background:#333; border-radius:6px; flex-shrink:0; border:2px solid transparent; background-size:cover; background-position:center; position:relative; }
+        .card { width:75px; height:108px; background:#34495e; border-radius:6px; flex-shrink:0; border:2px solid transparent; display:flex; flex-direction:column; justify-content:space-between; position:relative; box-sizing:border-box; padding:5px; }
         .card.selected { border-color:#ffcc00; box-shadow:0 0 10px #ffcc00; }
-        .card .card-info { position:absolute; bottom:0; width:100%; background:rgba(0,0,0,0.8); font-size:9px; text-align:center; padding:2px 0; }
+        .card-name { font-size:9px; font-weight:bold; word-break:break-word; text-shadow:1px 1px 2px #000; text-align:center; }
+        .card-meta { font-size:9px; display:flex; justify-content:space-between; background:rgba(0,0,0,0.6); padding:2px; border-radius:3px; }
         #controls { height:15vh; display:flex; justify-content:space-around; align-items:center; background:#181818; padding:0 10px; border-top:1px solid #222; }
         button { padding:12px 18px; background:#007bff; color:#fff; border:none; border-radius:6px; font-size:14px; font-weight:bold; }
-        button:active { background:#0056b3; }
+        button:disabled { background:#444; color:#888; }
+        #loading-screen { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); display:flex; justify-content:center; align-items:center; z-index:999; font-size:18px; }
     </style>
 </head>
 <body>
+
+    <!-- หน้าจอโหลดข้อมูลจากการ์ด -->
+    <div id="loading-screen">กำลังดึงข้อมูลการ์ดจาก Google Sheets...</div>
 
     <div id="game-board">
         <div class="zone" id="Left-Rear">Rear Left</div>
@@ -27,28 +32,86 @@
     </div>
 
     <div id="controls">
-        <button onclick="drawCard()">จั่วการ์ด (Draw)</button>
-        <div id="game-status" style="text-align:center;">พลังงาน Energy: <span id="energy-val">0</span><br><small>การ์ดในกอง: <span id="deck-count">0</span></small></div>
-        <button onclick="triggerCheck()" style="background:#dc3545;">ไดร์ฟ (Drive)</button>
+        <button id="draw-btn" onclick="drawCard()" disabled>จั่วการ์ด (Draw)</button>
+        <div id="game-status" style="text-align:center;">
+            <div>การ์ดในกอง: <span id="deck-count">0</span> ใบ</div>
+            <div style="font-size:11px; color:#aaa;" id="nation-info">กำลังเตรียมการ์ด...</div>
+        </div>
+        <button id="drive-btn" onclick="triggerCheck()" style="background:#dc3545;" disabled>ไดร์ฟ (Drive)</button>
     </div>
 
     <div id="player-hand"></div>
 
     <script>
-        let selectedCard = null;
+        // ใช้ไอดีตารางของคุณเพื่อดึงข้อมูลสด
+        const SHEET_ID = '18AalJyIOhiTjlvfyV8D4gN2hJERgbCo4NUE7meDRijs';
+        const CSV_URL = `https://google.com{SHEET_ID}/export?format=csv`;
+
+        let cardDatabase = [];
+        let deck = [];
         let hand = [];
-        
-        // ฐานข้อมูลเริ่มต้น (เดี๋ยวเราจะเอาลิงก์จาก Google Sheets มาเชื่อมตรงนี้ทีหลัง)
-        let cardDatabase = [
-            { id: "1", name: "Bastion", grade: 3, power: 13000, trigger: "None", img: "https://placeholders.dev" },
-            { id: "2", name: "Hauras", grade: 0, power: 5000, trigger: "Front", img: "https://placeholders.dev" },
-            { id: "3", name: "Heal Trigger", grade: 0, power: 5000, trigger: "Heal", img: "https://placeholders.dev" }
-        ];
+        let selectedCard = null;
+
+        // ฟังก์ชันดึงข้อมูลจาก Google Sheets และแปลงเป็นข้อมูลเกม
+        async function loadCardsFromSheets() {
+            try {
+                const response = await fetch(CSV_URL);
+                const data = await response.text();
+                
+                // แยกแถวข้อมูลจากไฟล์ CSV
+                const rows = data.split('\n').slice(1); // ข้ามแถวหัวข้อแรก
+                
+                cardDatabase = rows.map(row => {
+                    // ใช้ Regex แยกคอมมาเพื่อป้องกันปัญหาชื่อการ์ดที่มีเครื่องหมายจุลภาค
+                    const cols = row.split(/,(?=(?:(?:[^"]*"){2})*[^"]*\$)/);
+                    if(cols.length >= 3) {
+                        return {
+                            id: cols[0]?.replace(/"/g, '').trim(),
+                            name: cols[1]?.replace(/"/g, '').trim(),
+                            grade: cols[2]?.replace(/"/g, '').trim() || "0",
+                            nation: cols[3]?.replace(/"/g, '').trim() || "Unknown",
+                            type: cols[4]?.replace(/"/g, '').trim() || "Normal",
+                            rarity: cols[5]?.replace(/"/g, '').trim() || ""
+                        };
+                    }
+                }).filter(card => card && card.name); // กรองข้อมูลแถวว่างออก
+
+                // สร้างเด็คเริ่มต้นจากการ์ดทั้งหมดในชีตของคุณ
+                deck = [...cardDatabase];
+                shuffle(deck);
+
+                // ปิดหน้าจอโหลดและเปิดระบบปุ่ม
+                document.getElementById('loading-screen').style.display = 'none';
+                document.getElementById('draw-btn').disabled = false;
+                document.getElementById('drive-btn').disabled = false;
+                updateStatus();
+            } catch (error) {
+                document.getElementById('loading-screen').innerText = 'เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล กรุณาเช็กสิทธิ์การแชร์ลิงก์ตาราง';
+                console.error(error);
+            }
+        }
+
+        // ฟังก์ชันสับกองการ์ด
+        function shuffle(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[array[j]]] = [array[array[j]], array[i]];
+            }
+        }
+
+        function updateStatus() {
+            document.getElementById('deck-count').innerText = deck.length;
+        }
 
         function drawCard() {
-            let randomCard = cardDatabase[Math.floor(Math.random() * cardDatabase.length)];
-            hand.push(randomCard);
+            if (deck.length === 0) {
+                alert("การ์ดหมดกองแล้ว!");
+                return;
+            }
+            let card = deck.pop();
+            hand.push(card);
             renderHand();
+            updateStatus();
         }
 
         function renderHand() {
@@ -57,8 +120,13 @@
             hand.forEach((card, index) => {
                 const cardEl = document.createElement('div');
                 cardEl.className = 'card';
-                cardEl.style.backgroundImage = `url('${card.img}')`;
-                cardEl.innerHTML = `<div class="card-info">G${card.grade} / ${card.power}</div>`;
+                cardEl.innerHTML = `
+                    <div class="card-name">${card.name}</div>
+                    <div class="card-meta">
+                        <span>G${card.grade}</span>
+                        <span style="font-size:7px;">${card.rarity}</span>
+                    </div>
+                `;
                 
                 cardEl.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -81,7 +149,15 @@
         document.querySelectorAll('.zone').forEach(zone => {
             zone.addEventListener('click', () => {
                 if (selectedCard) {
-                    zone.innerHTML = `<div class="card" style="background-image: url('${selectedCard.card.img}')"><div class="card-info">${selectedCard.card.name}</div></div>`;
+                    zone.innerHTML = `
+                        <div class="card" style="background:#2c3e50;">
+                            <div class="card-name">${selectedCard.card.name}</div>
+                            <div class="card-meta"><span>G${selectedCard.card.grade}</span></div>
+                        </div>`;
+                    
+                    // ปรับข้อมูลที่แถบแสดงสถานะตามยูนิตที่วาง
+                    document.getElementById('nation-info').innerText = `สังกัดล่าสุด: ${selectedCard.card.nation}`;
+                    
                     hand.splice(selectedCard.index, 1);
                     selectedCard = null;
                     renderHand();
@@ -91,13 +167,23 @@
         });
 
         function triggerCheck() {
-            let checkCard = cardDatabase[Math.floor(Math.random() * cardDatabase.length)];
-            if(checkCard.trigger !== "None") {
-                alert(`[TRIGGER CHECK!] เช็กได้ ${checkCard.trigger} Trigger! ระบบล็อกกฎบอกให้บวกพลังเพิ่ม 10000 เรียบร้อย!`);
+            if (deck.length === 0) return;
+            let checkCard = deck.pop();
+            updateStatus();
+            
+            if(checkCard.type.toLowerCase().includes("trigger") || checkCard.type.toLowerCase() === "over") {
+                alert(`[DRIVE CHECK] เจอการ์ด!!\nชื่อ: ${checkCard.name}\nประเภท: ${checkCard.type} Trigger! (บวกพลัง 10000 ชั่วคราว)`);
             } else {
-                alert(`Drive Check: ได้การ์ด ${checkCard.name} เกรด ${checkCard.grade} ไม่มีทริกเกอร์`);
+                alert(`[DRIVE CHECK]\nชื่อ: ${checkCard.name}\nเกรด: ${checkCard.grade} (ไม่มีเอฟเฟกต์ทริกเกอร์)`);
             }
+            
+            // นำการ์ดที่ไดร์ฟเช็กขึ้นมือตามกฎเกม
+            hand.push(checkCard);
+            renderHand();
         }
+
+        // เริ่มรันระบบดึงข้อมูลทันทีเมื่อเปิดเว็บ
+        window.onload = loadCardsFromSheets;
     </script>
 </body>
 </html>
